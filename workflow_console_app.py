@@ -469,6 +469,7 @@ let config = {};
 let summary = null;
 let task = null;
 let formDraft = {};
+let pendingSummaryRefresh = false;
 
 const stepDefs = [
   ["create_seed", "1. 造 seed", [["seed_count", "Seed 数量", "100"]]],
@@ -489,6 +490,7 @@ async function api(path, options) {
 
 async function refresh() {
   saveFormDraft();
+  pendingSummaryRefresh = false;
   config = await api("/api/config");
   const domains = await api("/api/domains");
   task = domains.task;
@@ -498,6 +500,21 @@ async function refresh() {
     renderSummary();
   }
   await refreshLog();
+}
+
+async function pollTask() {
+  try {
+    const previousStatus = task?.status;
+    const data = await api("/api/task");
+    task = data.task;
+    if (task?.log_path) await loadLog(task.log_path);
+    if (previousStatus === "running" && task?.status !== "running") {
+      pendingSummaryRefresh = true;
+      refreshWhenIdle();
+    }
+  } catch (e) {
+    document.getElementById("log").textContent = e.message;
+  }
 }
 
 function renderDomains(domains) {
@@ -542,6 +559,7 @@ function stepCard(def) {
     input.addEventListener("input", () => {
       formDraft[draftKey(step, name)] = input.value;
     });
+    input.addEventListener("blur", refreshWhenIdle);
     div.innerHTML = `<label>${label}</label>`;
     div.appendChild(input);
     form.appendChild(div);
@@ -621,6 +639,16 @@ async function retryLogin(step, fields) {
   await refresh();
 }
 
+function isEditingForm() {
+  const el = document.activeElement;
+  return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT");
+}
+
+function refreshWhenIdle() {
+  if (!pendingSummaryRefresh || isEditingForm()) return;
+  refresh().catch(e => document.getElementById("log").textContent = e.message);
+}
+
 async function refreshLog() {
   if (task?.log_path) await loadLog(task.log_path);
 }
@@ -632,7 +660,7 @@ async function loadLog(path) {
   box.scrollTop = box.scrollHeight;
 }
 
-setInterval(refresh, 3000);
+setInterval(pollTask, 3000);
 refresh().catch(e => document.getElementById("log").textContent = e.message);
 </script>
 </body>
