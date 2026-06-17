@@ -93,6 +93,21 @@ class WorkflowConsoleStateTests(unittest.TestCase):
             self.assertEqual(state["steps"]["invitee_login"]["status"], "done")
             self.assertTrue((domain_dir / "workflow_state.json").exists())
 
+    def test_mark_stale_running_steps_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = WorkflowStore(Path(tmp))
+            store.create_domain("nextgenart.online")
+            store.mark_step("nextgenart.online", "create_seed", "done")
+            store.mark_step("nextgenart.online", "seed_login", "running", log_path="/tmp/seed.log")
+
+            changed = store.mark_stale_running_steps_failed("console restarted")
+            state = store.load_state("nextgenart.online")
+
+            self.assertEqual(changed, 1)
+            self.assertEqual(state["steps"]["seed_login"]["status"], "failed")
+            self.assertEqual(state["steps"]["seed_login"]["returncode"], 1)
+            self.assertEqual(state["steps"]["seed_login"]["error"], "console restarted")
+
 
 if __name__ == "__main__":
     unittest.main()

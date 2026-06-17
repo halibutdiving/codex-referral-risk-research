@@ -18,6 +18,12 @@ class WorkflowConsoleAppTests(unittest.TestCase):
         self.assertIn("pendingSummaryRefresh", INDEX_HTML)
         self.assertIn("function isEditingForm()", INDEX_HTML)
 
+    def test_running_task_can_be_cancelled_from_ui(self):
+        self.assertIn('id="cancelTask"', INDEX_HTML)
+        self.assertIn("async function cancelTask()", INDEX_HTML)
+        self.assertIn('api("/api/cancel"', INDEX_HTML)
+        self.assertIn("renderTaskControls()", INDEX_HTML)
+
 
 if __name__ == "__main__":
     unittest.main()

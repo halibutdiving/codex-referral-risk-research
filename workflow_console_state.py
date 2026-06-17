@@ -190,6 +190,30 @@ class WorkflowStore:
             domains.append(state)
         return domains
 
+    def mark_stale_running_steps_failed(self, error: str) -> int:
+        changed = 0
+        if not self.domains_dir.is_dir():
+            return changed
+        for path in sorted(self.domains_dir.glob("*/workflow_state.json")):
+            try:
+                state = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            domain = state.get("domain") or path.parent.name
+            updated = False
+            for entry in state.get("steps", {}).values():
+                if entry.get("status") != "running":
+                    continue
+                entry["status"] = "failed"
+                entry["returncode"] = 1
+                entry["error"] = error
+                entry["updated_at"] = _now()
+                changed += 1
+                updated = True
+            if updated:
+                self.save_state(domain, state)
+        return changed
+
     def summary(self, domain: str) -> dict[str, Any]:
         domain_path = self.domain_dir(domain)
         state = self.load_state(domain)

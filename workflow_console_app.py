@@ -8,6 +8,7 @@ import argparse
 import csv
 import json
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -42,7 +43,7 @@ class TaskManager:
 
     def snapshot(self) -> dict[str, Any] | None:
         with self.lock:
-            return dict(self.current) if self.current else None
+            return _public_task(self.current) if self.current else None
 
     def start(self, domain: str, step: str, command: list[str], log_path: Path) -> dict[str, Any]:
         with self.lock:
@@ -62,12 +63,26 @@ class TaskManager:
         thread.start()
         return task
 
+    def cancel(self, reason: str = "cancel requested") -> dict[str, Any]:
+        with self.lock:
+            if not self.current or self.current.get("status") not in {"running", "cancelling"}:
+                raise RuntimeError("没有正在运行的任务")
+            task = self.current
+            task["status"] = "cancelling"
+            task["cancel_requested_at"] = _now()
+            task["cancel_reason"] = reason
+            proc = task.get("_process")
+        if proc and proc.poll() is None:
+            _terminate_process(proc)
+        return _public_task(task)
+
     def _run(self, task: dict[str, Any], log_path: Path) -> None:
         domain = task["domain"]
         step = task["step"]
         self.store.mark_step(domain, step, "running", log_path=str(log_path))
         log_path.parent.mkdir(parents=True, exist_ok=True)
         returncode = 1
+        proc: subprocess.Popen[str] | None = None
         try:
             with log_path.open("w", encoding="utf-8") as log:
                 log.write("$ " + " ".join(_quote_arg(x) for x in task["command"]) + "\n\n")
@@ -81,7 +96,11 @@ class TaskManager:
                     encoding="utf-8",
                     errors="replace",
                     env=_subprocess_env(),
+                    start_new_session=True,
                 )
+                with self.lock:
+                    task["_process"] = proc
+                    task["pid"] = proc.pid
                 assert proc.stdout is not None
                 for line in proc.stdout:
                     log.write(line)
@@ -92,14 +111,20 @@ class TaskManager:
             with log_path.open("a", encoding="utf-8") as log:
                 log.write(f"\n[workflow-console] task failed: {e}\n")
             returncode = 1
+        finally:
+            if proc and proc.stdout:
+                proc.stdout.close()
 
-        status = "done" if returncode == 0 else "failed"
+        with self.lock:
+            cancelled = bool(task.get("cancel_requested_at"))
+        status = "cancelled" if cancelled else "done" if returncode == 0 else "failed"
         self.store.mark_step(domain, step, status, log_path=str(log_path), returncode=returncode)
         with self.lock:
             if self.current:
                 self.current["status"] = status
                 self.current["returncode"] = returncode
                 self.current["finished_at"] = _now()
+                self.current.pop("_process", None)
 
 
 class WorkflowHandler(BaseHTTPRequestHandler):
@@ -153,6 +178,9 @@ class WorkflowHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/retry-login":
                 self._handle_retry_login(payload)
+                return
+            if parsed.path == "/api/cancel":
+                self._send_json({"ok": True, "task": self.tasks.cancel(str(payload.get("reason") or "user requested"))})
                 return
             self.send_error(404)
         except Exception as e:
@@ -290,6 +318,9 @@ class WorkflowHandler(BaseHTTPRequestHandler):
 
 
 def run(host: str, port: int) -> None:
+    cleared = WorkflowHandler.store.mark_stale_running_steps_failed("workflow console restarted")
+    if cleared:
+        print(f"[workflow-console] marked {cleared} stale running step(s) failed")
     server = ThreadingHTTPServer((host, port), WorkflowHandler)
     print(f"Workflow console: http://{host}:{port}")
     server.serve_forever()
@@ -363,6 +394,17 @@ def _subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
     return env
+
+
+def _terminate_process(proc: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except Exception:
+        proc.terminate()
+
+
+def _public_task(task: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in task.items() if not k.startswith("_")}
 
 
 def _quote_arg(value: str) -> str:
@@ -451,7 +493,10 @@ INDEX_HTML = r"""<!doctype html>
           <h2 id="title">选择域名</h2>
           <div class="small" id="pathLine"></div>
         </div>
-        <button onclick="refresh()">刷新</button>
+        <div class="actions">
+          <button id="cancelTask" onclick="cancelTask()" disabled>中断任务</button>
+          <button onclick="refresh()">刷新</button>
+        </div>
       </div>
       <div class="status-grid">
         <div class="metric"><div class="small">Seed CSV</div><div class="metric-value" id="seedCsv">0</div></div>
@@ -495,6 +540,7 @@ async function refresh() {
   const domains = await api("/api/domains");
   task = domains.task;
   renderDomains(domains.domains);
+  renderTaskControls();
   if (selectedDomain) {
     summary = await api("/api/domain?domain=" + encodeURIComponent(selectedDomain));
     renderSummary();
@@ -507,6 +553,7 @@ async function pollTask() {
     const previousStatus = task?.status;
     const data = await api("/api/task");
     task = data.task;
+    renderTaskControls();
     if (task?.log_path) await loadLog(task.log_path);
     if (previousStatus === "running" && task?.status !== "running") {
       pendingSummaryRefresh = true;
@@ -590,6 +637,14 @@ function stepCard(def) {
   return card;
 }
 
+function renderTaskControls() {
+  const cancel = document.getElementById("cancelTask");
+  if (!cancel) return;
+  const running = task?.status === "running" || task?.status === "cancelling";
+  cancel.disabled = !running;
+  cancel.textContent = task?.status === "cancelling" ? "正在中断..." : "中断任务";
+}
+
 function defaultValue(name, fallback) {
   if (name === "proxy_template") return config.proxy_template || fallback;
   if (name === "keycloak_url") return config.keycloak_url || fallback;
@@ -636,6 +691,12 @@ async function runStep(step, fields) {
 async function retryLogin(step, fields) {
   await api("/api/retry-login", { method: "POST", body: JSON.stringify(collect(step, fields)) });
   formDraft = {};
+  await refresh();
+}
+
+async function cancelTask() {
+  await api("/api/cancel", { method: "POST", body: JSON.stringify({ reason: "user requested" }) });
+  pendingSummaryRefresh = true;
   await refresh();
 }
 
