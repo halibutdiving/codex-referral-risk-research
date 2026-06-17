@@ -468,6 +468,7 @@ let selectedDomain = "";
 let config = {};
 let summary = null;
 let task = null;
+let formDraft = {};
 
 const stepDefs = [
   ["create_seed", "1. 造 seed", [["seed_count", "Seed 数量", "100"]]],
@@ -487,6 +488,7 @@ async function api(path, options) {
 }
 
 async function refresh() {
+  saveFormDraft();
   config = await api("/api/config");
   const domains = await api("/api/domains");
   task = domains.task;
@@ -505,7 +507,7 @@ function renderDomains(domains) {
     const btn = document.createElement("button");
     btn.className = "domain-item" + (state.domain === selectedDomain ? " active" : "");
     btn.textContent = state.domain;
-    btn.onclick = () => { selectedDomain = state.domain; refresh(); };
+    btn.onclick = () => { selectedDomain = state.domain; formDraft = {}; refresh(); };
     box.appendChild(btn);
   });
 }
@@ -536,7 +538,10 @@ function stepCard(def) {
     if (name === "proxy_template" || name === "admin_password_file") div.className = "wide";
     const input = document.createElement("input");
     input.id = `${step}_${name}`;
-    input.value = defaultValue(name, fallback);
+    input.value = formDraft[draftKey(step, name)] ?? defaultValue(name, fallback);
+    input.addEventListener("input", () => {
+      formDraft[draftKey(step, name)] = input.value;
+    });
     div.innerHTML = `<label>${label}</label>`;
     div.appendChild(input);
     form.appendChild(div);
@@ -576,6 +581,20 @@ function defaultValue(name, fallback) {
   return fallback;
 }
 
+function draftKey(step, name) {
+  return `${selectedDomain}:${step}:${name}`;
+}
+
+function saveFormDraft() {
+  if (!selectedDomain) return;
+  stepDefs.forEach(([step, title, fields]) => {
+    fields.forEach(([name]) => {
+      const input = document.getElementById(`${step}_${name}`);
+      if (input) formDraft[draftKey(step, name)] = input.value;
+    });
+  });
+}
+
 function collect(step, fields) {
   const payload = { domain: selectedDomain, step };
   fields.forEach(([name]) => payload[name] = document.getElementById(`${step}_${name}`)?.value || "");
@@ -586,16 +605,19 @@ async function createDomain() {
   const domain = document.getElementById("newDomain").value;
   await api("/api/domain", { method: "POST", body: JSON.stringify({ domain }) });
   selectedDomain = domain.trim().toLowerCase();
+  formDraft = {};
   await refresh();
 }
 
 async function runStep(step, fields) {
   await api("/api/run", { method: "POST", body: JSON.stringify(collect(step, fields)) });
+  formDraft = {};
   await refresh();
 }
 
 async function retryLogin(step, fields) {
   await api("/api/retry-login", { method: "POST", body: JSON.stringify(collect(step, fields)) });
+  formDraft = {};
   await refresh();
 }
 
