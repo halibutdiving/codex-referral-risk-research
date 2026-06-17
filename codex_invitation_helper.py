@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
+r"""
 Codex Referral Invitation Helper (协议邀请工具脚本)
 =================================================
 模拟 Codex Desktop App 进行工作区推荐邀请 (Workspace Referrals)。
@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
 sys.stdout.reconfigure(encoding="utf-8")
+
+from proxy_utils import proxy_for_auth_file
 
 try:
     import requests
@@ -217,11 +219,19 @@ def main() -> int:
     
     # 代理与输出
     parser.add_argument("--proxy", help="HTTP 住宅或本地代理 URL")
+    parser.add_argument("--proxy-template", help="按 auth 账号邮箱生成动态代理 URL 模板，使用 {sid} 作为稳定随机码占位符")
+    parser.add_argument("--proxy-sid-len", type=int, default=8, help="动态代理 {sid} 长度 [默认: 8]")
     parser.add_argument("--out", help="成功发送后，将已发送的邮箱列表保存至该 JSON 文件路径")
     parser.add_argument("--dry-run", action="store_true", help="只做预检，输出准备邀请的邮箱，不发送实际邀请")
     parser.add_argument("--save-back", action="store_true", help="刷新 token 或补齐 account_id 后写回原文件")
     
     args = parser.parse_args()
+    if args.proxy_sid_len <= 0:
+        print(f"[!] --proxy-sid-len 必须大于 0，当前: {args.proxy_sid_len}")
+        return 1
+    if args.proxy_template and "{sid}" not in args.proxy_template:
+        print("[!] --proxy-template 必须包含 {sid} 占位符")
+        return 1
     
     # 禁用 SSL 校验警告（配合代理）
     try:
@@ -242,7 +252,10 @@ def main() -> int:
 
     # 2. 读取凭据
     auth_file_path = Path(args.auth_file)
-    access_token, account_id = load_auth_tokens(auth_file_path, args.proxy, args.save_back)
+    account_proxy = proxy_for_auth_file(auth_file_path, args.proxy_template, args.proxy_sid_len) or args.proxy
+    if args.proxy_template:
+        log(f"动态代理模板已启用: 按 auth 邮箱生成 {args.proxy_sid_len} 位 sid")
+    access_token, account_id = load_auth_tokens(auth_file_path, account_proxy, args.save_back)
     
     print("=" * 60)
     print("母号信息:")
@@ -254,7 +267,7 @@ def main() -> int:
     print("=" * 60)
 
     # 3. 初始化请求会话
-    session_type, session = build_session(args.proxy)
+    session_type, session = build_session(account_proxy)
 
     # 4. 查询额度预检
     log("查询当前母号可邀请额度中...")

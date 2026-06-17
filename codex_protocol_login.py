@@ -54,6 +54,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from proxy_utils import proxy_for_email
+
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -1223,6 +1225,8 @@ def main() -> int:
     group.add_argument("--out", help="单账号输出路径")
     group.add_argument("--out-dir", help="批量输出目录")
     parser.add_argument("--proxy", help="代理 URL")
+    parser.add_argument("--proxy-template", help="按邮箱生成动态代理 URL 模板，使用 {sid} 作为 8 位稳定随机码占位符")
+    parser.add_argument("--proxy-sid-len", type=int, default=8, help="动态代理 {sid} 长度 [默认: 8]")
     parser.add_argument("--concurrency", type=int, default=1, help="CSV 批量登录并发数 [默认: 1]")
     parser.add_argument("--retries", type=int, default=2, help="CSV 批量登录失败重试次数 [默认: 2]")
     parser.add_argument("--skip-existing", action="store_true", help="CSV 批量登录时跳过已存在的输出 JSON")
@@ -1234,6 +1238,12 @@ def main() -> int:
     if args.retries < 0:
         print(f"[!] --retries 不能小于 0，当前: {args.retries}")
         return 1
+    if args.proxy_sid_len <= 0:
+        print(f"[!] --proxy-sid-len 必须大于 0，当前: {args.proxy_sid_len}")
+        return 1
+    if args.proxy_template and "{sid}" not in args.proxy_template:
+        print("[!] --proxy-template 必须包含 {sid} 占位符")
+        return 1
 
     try:
         import urllib3
@@ -1243,7 +1253,8 @@ def main() -> int:
 
     if args.email and args.password:
         out_path = Path(args.out) if args.out else Path(args.out_dir) / f"{safe_account_filename(args.email)}.json"
-        ok = login_and_save(args.email, args.password, out_path, args.proxy)
+        account_proxy = proxy_for_email(args.email, args.proxy_template, args.proxy_sid_len) or args.proxy
+        ok = login_and_save(args.email, args.password, out_path, account_proxy)
         return 0 if ok else 1
 
     if not args.csv:
@@ -1292,6 +1303,8 @@ def main() -> int:
         f"批量登录: {len(jobs)} 个账号，并发 {args.concurrency}，"
         f"失败重试 {args.retries} 次"
     )
+    if args.proxy_template:
+        logger.info(f"动态代理模板已启用: 每个账号按邮箱生成 {args.proxy_sid_len} 位 sid")
     if duplicate_count:
         logger.warning(f"已跳过 {duplicate_count} 个重复输出路径")
 
@@ -1308,7 +1321,7 @@ def main() -> int:
                 email,
                 password,
                 out_path,
-                args.proxy,
+                proxy_for_email(email, args.proxy_template, args.proxy_sid_len) or args.proxy,
                 args.retries,
                 args.skip_existing,
             ): email

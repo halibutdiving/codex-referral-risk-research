@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.stdout.reconfigure(encoding="utf-8")
 
 from codex_activation_helper import run_protocol_activation, jwt_decode
+from proxy_utils import proxy_for_auth_file
 
 
 def log(msg: str, symbol: str = "*") -> None:
@@ -96,11 +97,19 @@ def main() -> int:
     parser.add_argument("--auth-dir", required=True, help="子号凭证目录")
     parser.add_argument("--concurrency", type=int, default=5, help="并发数 [默认: 5]")
     parser.add_argument("--proxy", help="HTTP 代理 URL")
+    parser.add_argument("--proxy-template", help="按 auth 账号邮箱生成动态代理 URL 模板，使用 {sid} 作为稳定随机码占位符")
+    parser.add_argument("--proxy-sid-len", type=int, default=8, help="动态代理 {sid} 长度 [默认: 8]")
     parser.add_argument("--save-back", action="store_true", help="刷新 token 后写回原文件")
     args = parser.parse_args()
 
     if args.concurrency <= 0:
         print(f"[!] --concurrency 必须大于 0，当前: {args.concurrency}")
+        return 1
+    if args.proxy_sid_len <= 0:
+        print(f"[!] --proxy-sid-len 必须大于 0，当前: {args.proxy_sid_len}")
+        return 1
+    if args.proxy_template and "{sid}" not in args.proxy_template:
+        print("[!] --proxy-template 必须包含 {sid} 占位符")
         return 1
 
     try:
@@ -124,6 +133,8 @@ def main() -> int:
     if skipped:
         log(f"已跳过 {skipped} 个非账号 JSON 文件")
     log(f"扫描到 {len(auth_files)} 个子号，并发数 {args.concurrency}")
+    if args.proxy_template:
+        log(f"动态代理模板已启用: 每个子号按 auth 邮箱生成 {args.proxy_sid_len} 位 sid")
 
     results = []
     success_count = 0
@@ -131,7 +142,12 @@ def main() -> int:
     max_workers = min(args.concurrency, len(auth_files))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
-            pool.submit(process_account, fp, args.proxy, args.save_back): fp
+            pool.submit(
+                process_account,
+                fp,
+                proxy_for_auth_file(fp, args.proxy_template, args.proxy_sid_len) or args.proxy,
+                args.save_back,
+            ): fp
             for fp in auth_files
         }
         for future in as_completed(futures):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
+r"""
 Codex App Activation Helper (全自动激活及协议模拟脚本)
 =====================================================
 本项目将以下两种运行模式整合为一体：
@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 sys.stdout.reconfigure(encoding="utf-8")
+
+from proxy_utils import proxy_for_auth_file
 
 try:
     import requests
@@ -357,11 +359,19 @@ def main() -> int:
         help="激活模式。protocol: 纯 API 模拟(推荐，支持代理)；local-app: 拉起本地客户端 (默认: protocol)"
     )
     parser.add_argument("--proxy", help="用于协议模拟的代理地址 (例如: http://127.0.0.1:7890)")
+    parser.add_argument("--proxy-template", help="按 auth 账号邮箱生成动态代理 URL 模板，使用 {sid} 作为稳定随机码占位符")
+    parser.add_argument("--proxy-sid-len", type=int, default=8, help="动态代理 {sid} 长度 [默认: 8]")
     parser.add_argument("--save-back", action="store_true", help="若刷新了 Access Token，是否写回原 JSON 文件")
     
     args = parser.parse_args()
+    if args.proxy_sid_len <= 0:
+        print(f"[!] --proxy-sid-len 必须大于 0，当前: {args.proxy_sid_len}")
+        return 1
+    if args.proxy_template and "{sid}" not in args.proxy_template:
+        print("[!] --proxy-template 必须包含 {sid} 占位符")
+        return 1
     
-    if args.proxy:
+    if args.proxy or args.proxy_template:
         # 禁用 InsecureRequestWarning 警告
         try:
             import urllib3
@@ -413,7 +423,8 @@ def main() -> int:
         
         ok = False
         if args.method == "protocol":
-            ok = run_protocol_activation(auth_data, args.proxy)
+            account_proxy = proxy_for_auth_file(fpath, args.proxy_template, args.proxy_sid_len) or args.proxy
+            ok = run_protocol_activation(auth_data, account_proxy)
         else:
             ok = run_local_app_activation(auth_data)
 

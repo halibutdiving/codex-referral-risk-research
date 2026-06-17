@@ -20,6 +20,7 @@ import sys
 import json
 import time
 import argparse
+import threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -30,6 +31,7 @@ from codex_invitation_helper import (
     load_auth_tokens, build_session, get_headers, check_eligibility,
     random_email, INVITE_URL, REFERRAL_KEY
 )
+from proxy_utils import proxy_for_auth_file
 
 
 def log(msg: str, symbol: str = "*") -> None:
@@ -56,6 +58,7 @@ def process_account(
     proxy: str = None,
     dry_run: bool = False,
     save_back: bool = False,
+    invite_barrier=None,
 ) -> dict:
     """处理单个母号的邀请任务"""
     result = {
@@ -69,30 +72,44 @@ def process_account(
     }
 
     try:
-        access_token, account_id = load_auth_tokens(auth_path, proxy, save_back)
-    except SystemExit:
-        result["error"] = "凭证加载失败"
-        return result
-
-    session_type, session = build_session(proxy)
-    remaining = check_eligibility(session, access_token, account_id)
-
-    if remaining is not None:
-        if remaining <= 0:
-            result["error"] = f"额度已用完 (剩余: {remaining})"
+        try:
+            access_token, account_id = load_auth_tokens(auth_path, proxy, save_back)
+        except SystemExit:
+            result["error"] = "凭证加载失败"
             return result
-        count = min(per_account, remaining)
-    else:
-        count = per_account
 
-    emails = [random_email(domain) for _ in range(count)]
-    result["emails"] = emails
+        session_type, session = build_session(proxy)
+        remaining = check_eligibility(session, access_token, account_id)
 
-    if dry_run:
-        result["success"] = True
-        result["error"] = "dry-run"
-        result["sent_count"] = len(emails)
-        return result
+        if remaining is not None:
+            if remaining <= 0:
+                result["error"] = f"额度已用完 (剩余: {remaining})"
+                return result
+            count = min(per_account, remaining)
+        else:
+            count = per_account
+
+        emails = [random_email(domain) for _ in range(count)]
+        result["emails"] = emails
+
+        if dry_run:
+            result["success"] = True
+            result["error"] = "dry-run"
+            result["sent_count"] = len(emails)
+            return result
+    finally:
+        if invite_barrier is not None and result.get("error"):
+            try:
+                invite_barrier.abort()
+            except Exception:
+                pass
+
+    if invite_barrier is not None:
+        try:
+            invite_barrier.wait()
+        except threading.BrokenBarrierError:
+            result["error"] = "burst barrier 已中止"
+            return result
 
     try:
         resp = session.post(
@@ -136,8 +153,12 @@ def main() -> int:
     parser.add_argument("--per-account", type=int, default=5, help="每个母号邀请邮箱数 [默认: 5]")
     parser.add_argument("--concurrency", type=int, default=5, help="并发母号数 [默认: 5]")
     parser.add_argument("--proxy", help="HTTP 代理 URL")
+    parser.add_argument("--proxy-template", help="按 auth 账号邮箱生成动态代理 URL 模板，使用 {sid} 作为稳定随机码占位符")
+    parser.add_argument("--proxy-sid-len", type=int, default=8, help="动态代理 {sid} 长度 [默认: 8]")
     parser.add_argument("--out", help="结果输出 JSON 文件路径")
     parser.add_argument("--dry-run", action="store_true", help="只预检，不实际发送")
+    parser.add_argument("--burst-invite", action="store_true", help="预检完成后使用 barrier 尽量同时发出 invite POST")
+    parser.add_argument("--burst-timeout", type=float, default=30.0, help="burst barrier 等待秒数 [默认: 30]")
     parser.add_argument("--save-back", action="store_true", help="刷新 token 或补齐 account_id 后写回原文件")
     args = parser.parse_args()
 
@@ -146,6 +167,15 @@ def main() -> int:
         return 1
     if args.concurrency <= 0:
         print(f"[!] --concurrency 必须大于 0，当前: {args.concurrency}")
+        return 1
+    if args.proxy_sid_len <= 0:
+        print(f"[!] --proxy-sid-len 必须大于 0，当前: {args.proxy_sid_len}")
+        return 1
+    if args.proxy_template and "{sid}" not in args.proxy_template:
+        print("[!] --proxy-template 必须包含 {sid} 占位符")
+        return 1
+    if args.burst_timeout <= 0:
+        print(f"[!] --burst-timeout 必须大于 0，当前: {args.burst_timeout}")
         return 1
 
     try:
@@ -169,17 +199,33 @@ def main() -> int:
     if skipped:
         log(f"已跳过 {skipped} 个非账号 JSON 文件")
     log(f"扫描到 {len(auth_files)} 个母号，每个邀请 {args.per_account} 个邮箱，并发数 {args.concurrency}")
+    if args.proxy_template:
+        log(f"动态代理模板已启用: 每个母号按 auth 邮箱生成 {args.proxy_sid_len} 位 sid")
     if args.dry_run:
         log("dry-run 模式，不会实际发送邀请")
+    if args.burst_invite and not args.dry_run:
+        log("burst-invite 已启用：通过预检的并发任务将等待统一放行 invite POST")
 
     results = []
     total_emails = 0
     success_accounts = 0
 
     max_workers = min(args.concurrency, len(auth_files))
+    invite_barrier = None
+    if args.burst_invite and not args.dry_run and max_workers > 1:
+        invite_barrier = threading.Barrier(max_workers, timeout=args.burst_timeout)
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
-            pool.submit(process_account, fp, args.domain, args.per_account, args.proxy, args.dry_run, args.save_back): fp
+            pool.submit(
+                process_account,
+                fp,
+                args.domain,
+                args.per_account,
+                proxy_for_auth_file(fp, args.proxy_template, args.proxy_sid_len) or args.proxy,
+                args.dry_run,
+                args.save_back,
+                invite_barrier,
+            ): fp
             for fp in auth_files
         }
         for future in as_completed(futures):
