@@ -182,6 +182,11 @@ class WorkflowHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/cancel":
                 self._send_json({"ok": True, "task": self.tasks.cancel(str(payload.get("reason") or "user requested"))})
                 return
+            if parsed.path == "/api/settings":
+                domain = safe_domain_name(payload["domain"])
+                state = self.store.update_form_settings(domain, payload.get("forms") or {})
+                self._send_json({"ok": True, "state": state})
+                return
             self.send_error(404)
         except Exception as e:
             self._send_json({"error": str(e)}, status=400)
@@ -189,6 +194,7 @@ class WorkflowHandler(BaseHTTPRequestHandler):
     def _handle_run(self, payload: dict[str, Any]) -> None:
         domain = safe_domain_name(payload["domain"])
         step = payload["step"]
+        self._persist_step_settings(domain, step, payload)
         if not self.store.can_run_step(domain, step):
             raise RuntimeError(f"步骤不可运行或已完成: {step}")
 
@@ -208,6 +214,7 @@ class WorkflowHandler(BaseHTTPRequestHandler):
     def _handle_retry_login(self, payload: dict[str, Any]) -> None:
         domain = safe_domain_name(payload["domain"])
         step = payload["step"]
+        self._persist_step_settings(domain, step, payload)
         if not self.store.can_retry_login(domain, step):
             raise RuntimeError(f"步骤不可补跑: {step}")
         domain_dir = self.store.domain_dir(domain)
@@ -286,6 +293,14 @@ class WorkflowHandler(BaseHTTPRequestHandler):
     def _log_path(self, domain: str, step: str) -> Path:
         name = f"{step}_{time.strftime('%Y%m%d_%H%M%S')}.log"
         return self.store.domain_dir(domain) / "logs" / name
+
+    def _persist_step_settings(self, domain: str, step: str, payload: dict[str, Any]) -> None:
+        values = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"domain", "step"} and value is not None
+        }
+        self.store.update_form_settings(domain, {step: values})
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or "0")
@@ -602,11 +617,14 @@ function stepCard(def) {
     if (name === "proxy_template" || name === "admin_password_file") div.className = "wide";
     const input = document.createElement("input");
     input.id = `${step}_${name}`;
-    input.value = formDraft[draftKey(step, name)] ?? defaultValue(name, fallback);
+    input.value = formDraft[draftKey(step, name)] ?? defaultValue(step, name, fallback);
     input.addEventListener("input", () => {
       formDraft[draftKey(step, name)] = input.value;
     });
-    input.addEventListener("blur", refreshWhenIdle);
+    input.addEventListener("blur", () => {
+      saveFormSettings().catch(e => document.getElementById("log").textContent = e.message);
+      refreshWhenIdle();
+    });
     div.innerHTML = `<label>${label}</label>`;
     div.appendChild(input);
     form.appendChild(div);
@@ -645,7 +663,9 @@ function renderTaskControls() {
   cancel.textContent = task?.status === "cancelling" ? "正在中断..." : "中断任务";
 }
 
-function defaultValue(name, fallback) {
+function defaultValue(step, name, fallback) {
+  const saved = summary?.state?.settings?.forms?.[step]?.[name];
+  if (saved !== undefined) return saved;
   if (name === "proxy_template") return config.proxy_template || fallback;
   if (name === "keycloak_url") return config.keycloak_url || fallback;
   if (name === "realm") return config.realm || fallback;
@@ -674,6 +694,28 @@ function collect(step, fields) {
   return payload;
 }
 
+function collectAllForms() {
+  const forms = {};
+  stepDefs.forEach(([step, title, fields]) => {
+    const values = {};
+    fields.forEach(([name]) => {
+      const input = document.getElementById(`${step}_${name}`);
+      if (input) values[name] = input.value;
+    });
+    if (Object.keys(values).length) forms[step] = values;
+  });
+  return forms;
+}
+
+async function saveFormSettings() {
+  if (!selectedDomain) return;
+  saveFormDraft();
+  await api("/api/settings", {
+    method: "POST",
+    body: JSON.stringify({ domain: selectedDomain, forms: collectAllForms() })
+  });
+}
+
 async function createDomain() {
   const domain = document.getElementById("newDomain").value;
   await api("/api/domain", { method: "POST", body: JSON.stringify({ domain }) });
@@ -683,12 +725,14 @@ async function createDomain() {
 }
 
 async function runStep(step, fields) {
+  await saveFormSettings();
   await api("/api/run", { method: "POST", body: JSON.stringify(collect(step, fields)) });
   formDraft = {};
   await refresh();
 }
 
 async function retryLogin(step, fields) {
+  await saveFormSettings();
   await api("/api/retry-login", { method: "POST", body: JSON.stringify(collect(step, fields)) });
   formDraft = {};
   await refresh();

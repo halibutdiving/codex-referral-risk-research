@@ -108,6 +108,35 @@ class WorkflowConsoleStateTests(unittest.TestCase):
             self.assertEqual(state["steps"]["seed_login"]["returncode"], 1)
             self.assertEqual(state["steps"]["seed_login"]["error"], "console restarted")
 
+    def test_update_form_settings_persists_domain_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = WorkflowStore(Path(tmp))
+            store.create_domain("nextgenart.online")
+
+            store.update_form_settings(
+                "nextgenart.online",
+                {
+                    "seed_login": {
+                        "proxy_template": "http://user-sid-{sid}:pass@example.test:3010",
+                        "concurrency": 30,
+                        "retries": 2,
+                    },
+                    "import_seed": {
+                        "admin_password": "secret",
+                        "admin_password_file": "/tmp/keycloak.password",
+                    },
+                },
+            )
+            state = store.load_state("nextgenart.online")
+
+            self.assertEqual(
+                state["settings"]["forms"]["seed_login"]["proxy_template"],
+                "http://user-sid-{sid}:pass@example.test:3010",
+            )
+            self.assertEqual(state["settings"]["forms"]["seed_login"]["concurrency"], "30")
+            self.assertEqual(state["settings"]["forms"]["import_seed"]["admin_password_file"], "/tmp/keycloak.password")
+            self.assertNotIn("admin_password", state["settings"]["forms"]["import_seed"])
+
 
 if __name__ == "__main__":
     unittest.main()

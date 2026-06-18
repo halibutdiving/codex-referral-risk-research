@@ -24,6 +24,12 @@ class WorkflowConsoleAppTests(unittest.TestCase):
         self.assertIn('api("/api/cancel"', INDEX_HTML)
         self.assertIn("renderTaskControls()", INDEX_HTML)
 
+    def test_form_settings_are_persisted_per_domain(self):
+        self.assertIn("async function saveFormSettings()", INDEX_HTML)
+        self.assertIn("function collectAllForms()", INDEX_HTML)
+        self.assertIn('api("/api/settings"', INDEX_HTML)
+        self.assertIn("summary?.state?.settings?.forms?.[step]?.[name]", INDEX_HTML)
+
 
 if __name__ == "__main__":
     unittest.main()

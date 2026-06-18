@@ -152,6 +152,21 @@ class WorkflowStore:
         self.save_state(domain, state)
         return state
 
+    def update_form_settings(self, domain: str, forms: dict[str, Any]) -> dict[str, Any]:
+        state = self.load_state(domain)
+        settings = state.setdefault("settings", {})
+        current_forms = settings.setdefault("forms", {})
+        for step, values in forms.items():
+            if not isinstance(values, dict):
+                continue
+            step_values = current_forms.setdefault(str(step), {})
+            for key, value in values.items():
+                if key == "admin_password":
+                    continue
+                step_values[str(key)] = "" if value is None else str(value)
+        self.save_state(domain, state)
+        return state
+
     def can_run_step(self, domain: str, step: str) -> bool:
         if step not in STEP_ORDER:
             raise ValueError(f"未知步骤: {step}")
