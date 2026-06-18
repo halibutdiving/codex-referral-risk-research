@@ -209,7 +209,6 @@ def run_protocol_activation(auth_data: Dict[str, Any], proxy: Optional[str] = No
         ("GET", f"/backend-api/accounts/{account_id}/settings", {}, "用户设置拉取"),
         ("GET", f"/backend-api/accounts/{account_id}/codex_invite_promo_status", {}, "受邀活动红利状态"),
         ("GET", "/backend-api/me", {}, "个人信息拉取"),
-        ("GET", f"/backend-api/accounts/{account_id}/remaining_balance", {}, "余额查询", False)
     ]
     
     success_count = 0
