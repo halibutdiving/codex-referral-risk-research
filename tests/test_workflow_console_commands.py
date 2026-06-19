@@ -24,12 +24,27 @@ class WorkflowConsoleCommandsTests(unittest.TestCase):
             self.assertTrue((domain_dir / "seed_accounts.password.txt").exists())
             with (domain_dir / "seed_accounts.csv").open(newline="", encoding="utf-8") as f:
                 rows = list(csv.reader(f))
+            suffix = result["batch_id"]
             self.assertEqual([row[0] for row in rows], [
-                "seed001@nextgenart.online",
-                "seed002@nextgenart.online",
-                "seed003@nextgenart.online",
+                f"seed001-{suffix}@nextgenart.online",
+                f"seed002-{suffix}@nextgenart.online",
+                f"seed003-{suffix}@nextgenart.online",
             ])
             self.assertTrue(all(row[1] for row in rows))
+
+    def test_generate_seed_accounts_uses_new_batch_each_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            domain_dir = Path(tmp) / "nextgenart.online"
+
+            first = generate_seed_accounts(domain_dir, "nextgenart.online", seed_count=2)
+            with (domain_dir / "seed_accounts.csv").open(newline="", encoding="utf-8") as f:
+                first_rows = list(csv.reader(f))
+            second = generate_seed_accounts(domain_dir, "nextgenart.online", seed_count=2)
+            with (domain_dir / "seed_accounts.csv").open(newline="", encoding="utf-8") as f:
+                second_rows = list(csv.reader(f))
+
+            self.assertNotEqual(first["batch_id"], second["batch_id"])
+            self.assertNotEqual([row[0] for row in first_rows], [row[0] for row in second_rows])
 
     def test_seed_login_command_uses_domain_paths_and_proxy_template(self):
         builder = WorkflowCommandBuilder(Path("/repo"), Path("/repo/runs"))

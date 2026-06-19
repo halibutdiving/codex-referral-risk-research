@@ -187,6 +187,12 @@ class WorkflowHandler(BaseHTTPRequestHandler):
                 state = self.store.update_form_settings(domain, payload.get("forms") or {})
                 self._send_json({"ok": True, "state": state})
                 return
+            if parsed.path == "/api/reset-domain":
+                if self.tasks.snapshot() and self.tasks.snapshot().get("status") == "running":
+                    raise RuntimeError("任务运行中，不能重置流程")
+                state = self.store.reset_domain(payload["domain"])
+                self._send_json({"ok": True, "state": state})
+                return
             self.send_error(404)
         except Exception as e:
             self._send_json({"error": str(e)}, status=400)
@@ -510,6 +516,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="actions">
           <button id="cancelTask" onclick="cancelTask()" disabled>中断任务</button>
+          <button id="resetDomain" onclick="resetDomain()" disabled>重置流程</button>
           <button onclick="refresh()">刷新</button>
         </div>
       </div>
@@ -657,10 +664,13 @@ function stepCard(def) {
 
 function renderTaskControls() {
   const cancel = document.getElementById("cancelTask");
-  if (!cancel) return;
+  const reset = document.getElementById("resetDomain");
   const running = task?.status === "running" || task?.status === "cancelling";
-  cancel.disabled = !running;
-  cancel.textContent = task?.status === "cancelling" ? "正在中断..." : "中断任务";
+  if (cancel) {
+    cancel.disabled = !running;
+    cancel.textContent = task?.status === "cancelling" ? "正在中断..." : "中断任务";
+  }
+  if (reset) reset.disabled = !selectedDomain || running;
 }
 
 function defaultValue(step, name, fallback) {
@@ -741,6 +751,14 @@ async function retryLogin(step, fields) {
 async function cancelTask() {
   await api("/api/cancel", { method: "POST", body: JSON.stringify({ reason: "user requested" }) });
   pendingSummaryRefresh = true;
+  await refresh();
+}
+
+async function resetDomain() {
+  if (!selectedDomain) return;
+  if (!confirm(`重置 ${selectedDomain} 的流程？旧产物会归档到 archives，表单配置会保留。`)) return;
+  formDraft = {};
+  await api("/api/reset-domain", { method: "POST", body: JSON.stringify({ domain: selectedDomain }) });
   await refresh();
 }
 

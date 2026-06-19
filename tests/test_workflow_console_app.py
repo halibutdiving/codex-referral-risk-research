@@ -30,6 +30,11 @@ class WorkflowConsoleAppTests(unittest.TestCase):
         self.assertIn('api("/api/settings"', INDEX_HTML)
         self.assertIn("summary?.state?.settings?.forms?.[step]?.[name]", INDEX_HTML)
 
+    def test_domain_can_be_reset_from_ui(self):
+        self.assertIn("async function resetDomain()", INDEX_HTML)
+        self.assertIn('api("/api/reset-domain"', INDEX_HTML)
+        self.assertIn("重置流程", INDEX_HTML)
+
 
 if __name__ == "__main__":
     unittest.main()

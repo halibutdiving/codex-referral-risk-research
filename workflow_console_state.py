@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -166,6 +167,28 @@ class WorkflowStore:
                 step_values[str(key)] = "" if value is None else str(value)
         self.save_state(domain, state)
         return state
+
+    def reset_domain(self, domain: str) -> dict[str, Any]:
+        safe_domain = safe_domain_name(domain)
+        state = self.load_state(safe_domain)
+        domain_path = self.domain_dir(safe_domain)
+        archive_dir = domain_path / "archives" / f"reset_{time.strftime('%Y%m%d_%H%M%S', time.gmtime())}"
+        archive_dir.mkdir(parents=True, exist_ok=False)
+        for path in sorted(domain_path.iterdir()):
+            if path.name in {"archives", "workflow_state.json"} or path.suffix == ".tmp":
+                continue
+            shutil.move(str(path), str(archive_dir / path.name))
+        new_state = {
+            "domain": safe_domain,
+            "created_at": state.get("created_at") or _now(),
+            "updated_at": _now(),
+            "steps": {},
+            "settings": state.get("settings", {}),
+            "reset_at": _now(),
+            "last_archive": str(archive_dir),
+        }
+        self.save_state(safe_domain, new_state)
+        return new_state
 
     def can_run_step(self, domain: str, step: str) -> bool:
         if step not in STEP_ORDER:

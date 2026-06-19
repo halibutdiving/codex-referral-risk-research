@@ -50,17 +50,23 @@ def generate_seed_accounts(domain_dir: Path, domain: str, seed_count: int = 100)
     domain_dir.mkdir(parents=True, exist_ok=True)
     csv_path = domain_dir / "seed_accounts.csv"
     password_path = domain_dir / "seed_accounts.password.txt"
+    batch_id = _seed_batch_id()
     if password_path.exists():
         password = password_path.read_text(encoding="utf-8").strip()
     else:
         password = generate_password()
         password_path.write_text(password + "\n", encoding="utf-8")
         password_path.chmod(0o600)
-    rows = [[f"seed{i:03d}@{domain}", password] for i in range(1, seed_count + 1)]
+    rows = [[f"seed{i:03d}-{batch_id}@{domain}", password] for i in range(1, seed_count + 1)]
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerows(rows)
     csv_path.chmod(0o600)
-    return {"seed_count": seed_count, "csv_path": str(csv_path), "password_path": str(password_path)}
+    return {"seed_count": seed_count, "batch_id": batch_id, "csv_path": str(csv_path), "password_path": str(password_path)}
+
+
+def _seed_batch_id(length: int = 6) -> str:
+    alphabet = string.ascii_lowercase + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def create_retry_csv_for_missing_auth(source_csv: Path, auth_dir: Path, retry_csv: Path) -> int:

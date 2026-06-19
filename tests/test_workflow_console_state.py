@@ -137,6 +137,28 @@ class WorkflowConsoleStateTests(unittest.TestCase):
             self.assertEqual(state["settings"]["forms"]["import_seed"]["admin_password_file"], "/tmp/keycloak.password")
             self.assertNotIn("admin_password", state["settings"]["forms"]["import_seed"])
 
+    def test_reset_domain_archives_artifacts_and_preserves_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = WorkflowStore(Path(tmp))
+            domain_dir = store.domain_dir("nextgenart.online")
+            store.create_domain("nextgenart.online")
+            store.update_form_settings("nextgenart.online", {"seed_login": {"concurrency": 30}})
+            store.mark_step("nextgenart.online", "create_seed", "done")
+            (domain_dir / "seed_accounts.csv").write_text("seed001@nextgenart.online,pw\n", encoding="utf-8")
+            (domain_dir / "seeds").mkdir()
+            (domain_dir / "seeds" / "seed001.json").write_text(json.dumps({"tokens": {"access_token": "a"}}), encoding="utf-8")
+
+            state = store.reset_domain("nextgenart.online")
+
+            self.assertEqual(state["steps"], {})
+            self.assertEqual(state["settings"]["forms"]["seed_login"]["concurrency"], "30")
+            self.assertFalse((domain_dir / "seed_accounts.csv").exists())
+            self.assertFalse((domain_dir / "seeds").exists())
+            archives = list((domain_dir / "archives").glob("reset_*"))
+            self.assertEqual(len(archives), 1)
+            self.assertTrue((archives[0] / "seed_accounts.csv").exists())
+            self.assertTrue((archives[0] / "seeds" / "seed001.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
